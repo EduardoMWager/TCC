@@ -1,6 +1,6 @@
 #include <Arduino.h>
 
-const int sensorPin = 34;  // Pino onde o sensor está conectado
+const int sensorPin = 34;  
 const int threshold = 50;  // Variação mínima para detectar um novo pico ou vale
 const unsigned long interval = 60000;  // Intervalo de 1 minuto em milissegundos
 const int numReadings = 10;  // Número de leituras para a média móvel
