@@ -1,0 +1,133 @@
+#include <Arduino.h>
+
+const int sensorPin = 34;  // Pino onde o sensor está conectado
+const unsigned long interval = 60000;  // Intervalo de 1 minuto em milissegundos
+const int numReadings = 20;  // Número de leituras para a média móvel
+const int consecutiveThreshold = 3;  // Número mínimo de leituras consecutivas para validar pico
+
+int readings[numReadings];  // Para média móvel
+int readIndex = 0;
+int total = 0;
+int average = 0;
+
+int peakCount = 0;  // Contador de ciclos respiratórios
+bool isPeakDetected = false;  // Indica se um pico foi detectado
+bool isStarted = false;  // Flag para iniciar a contagem após o comando 'start'
+bool isReset = false;  // Flag para verificar se o sistema foi resetado
+
+unsigned long startTime;
+unsigned long previousMillis = 0;
+
+float previousFilteredValue = 0;  // Armazena o último valor filtrado
+
+// Filtro passa-baixo simples
+float lowPassFilter(float currentValue, float alpha = 0.1) {
+  previousFilteredValue = alpha * currentValue + (1 - alpha) * previousFilteredValue;
+  return previousFilteredValue;
+}
+
+void setup() {
+  Serial.begin(9600);
+  for (int i = 0; i < numReadings; i++) {
+    readings[i] = 0;
+  }
+  Serial.println("Enviando VAL. Envie 'start' para iniciar a medição.");
+  Serial.println("Digite 'reset' para parar a contagem de RPM e ajustar valores.");
+}
+
+void loop() {
+  // Verifica se o usuário enviou o comando 'start' para iniciar a medição
+  if (!isStarted && Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    if (input == "start") {
+      isStarted = true;
+      startTime = millis();  // Reinicia o temporizador quando a medição começar
+      peakCount = 0;  // Reinicia o contador de ciclos respiratórios
+      Serial.println("Medição iniciada. Detectando ciclos respiratórios.");
+    }
+  }
+
+  // Verifica se o usuário enviou o comando 'reset' para interromper a contagem de RPM
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    if (input == "reset") {
+      isReset = true;  // Ativa o modo de ajuste
+      peakCount = 0;   // Reseta a contagem de ciclos respiratórios
+      isStarted = false;  // Para a contagem do RPM
+      Serial.println("Contagem de RPM interrompida. Modo de ajuste ativado.");
+    }
+  }
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= 100) {
+    previousMillis = currentMillis;
+
+    // Lê o valor do sensor e aplica média móvel
+    int sensorValue = analogRead(sensorPin);
+    total -= readings[readIndex];
+    readings[readIndex] = sensorValue;
+    total += readings[readIndex];
+    readIndex = (readIndex + 1) % numReadings;
+    average = total / numReadings;
+
+    // Aplicar filtro passa-baixo para suavização
+    int filteredValue = lowPassFilter(average, 0.1);  // Alpha pode ser ajustado conforme necessário
+
+    // Linearização: Mapeia o valor do ADC para uma faixa de 0 a 100 (exemplo)
+    int linearValue = map(filteredValue, 500, 2500, 0, 100);
+
+    // Exibe os valores de leitura para ajuste, mesmo em modo de ajuste
+    if (!isStarted || isReset) {
+      Serial.print("VAL:");
+      Serial.println(linearValue);
+    }
+
+    if (isStarted && !isReset) {
+      // Analisando se o valor está subindo ou descendo
+      static int previousLinearValue = linearValue;
+      static int direction = 0;  // 1 = subindo, -1 = descendo
+      static int stableCount = 0;  // Contador de leituras estáveis
+
+      // Verifica a direção atual (subindo ou descendo)
+      if (linearValue > previousLinearValue) {
+        direction = 1;  // Subindo
+        stableCount = 0;  // Reseta o contador de estabilidade
+      } else if (linearValue < previousLinearValue) {
+        direction = -1;  // Descendo
+        stableCount = 0;  // Reseta o contador de estabilidade
+      } else {
+        stableCount++;  // Se está estável, incrementa o contador
+      }
+
+      // Se o valor subiu e permaneceu estável, podemos considerar que atingiu um pico
+      if (direction == 1 && stableCount >= consecutiveThreshold && !isPeakDetected) {
+        isPeakDetected = true;
+        peakCount++;  // Incrementa o ciclo respiratório
+        Serial.print("PICO DETECTADO em VAL:");
+        Serial.println(linearValue);
+      }
+
+      // Se o valor começou a descer após o pico, confirma o pico
+      if (direction == -1 && isPeakDetected && stableCount >= consecutiveThreshold) {
+        isPeakDetected = false;
+      }
+
+      // Atualiza a RPM a cada minuto
+      if (currentMillis - startTime >= interval) {
+        int rpm = peakCount;  // Calcula a RPM com base nos picos detectados
+        Serial.print("RPM:");
+        Serial.println(rpm);
+        startTime += interval;
+        peakCount = 0;  // Reseta o contador de ciclos a cada minuto
+      }
+
+      // Atualiza o valor anterior
+      previousLinearValue = linearValue;
+    }
+  }
+}
